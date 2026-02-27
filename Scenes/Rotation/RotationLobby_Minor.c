@@ -1,16 +1,12 @@
-// Rotation Lobby Minor Scene — TEST VERSION 3
-// Adds: Text API (single text element)
-// No camera — just testing if Text_CreateCanvas works
+// Rotation Lobby Minor Scene — TEST VERSION 4
+// Test: Text_CreateText(0,0) instead of Text_CreateCanvas + Text_CreateText2
 
 #include "RotationLobby.h"
 
 typedef struct {
     int frame_count;
-    u8 local_port;
-    u8 player_count;
     u8 msrb[MSRB_TOTAL_SIZE];
-    int canvas_id;
-    Text *test_text;
+    Text *text;
 } LobbyUIState;
 
 static LobbyUIState *ui = 0;
@@ -25,18 +21,17 @@ static void load_msrb(u8 *buf)
 void minor_load(void *load_data)
 {
     ui = calloc(sizeof(LobbyUIState));
-
     load_msrb(ui->msrb);
-    ui->local_port   = ui->msrb[OFST_LOCAL_PLAYER_INDEX];
-    ui->player_count = ui->msrb[OFST_ROT_PLAYER_COUNT];
 
-    // Test: create a single text element
-    GXColor white = {0xFF, 0xFF, 0xFF, 0xFF};
-    ui->canvas_id = Text_CreateCanvas(0, 0, 0, 13, 80, 8, 0, 0);
-    ui->test_text = Text_CreateText2(0, ui->canvas_id,
-        5.0, 5.0, 0.0, 20.0, 2.0);
-    Text_AddSubtext(ui->test_text, 0.0, 0.0, "ROTATION LOBBY");
-    Text_SetColor(ui->test_text, 0, &white);
+    // Try GameSetup-style text creation
+    ui->text = Text_CreateText(0, 0);
+    ui->text->kerning = 1;
+    ui->text->align = 1;
+    ui->text->use_aspect = 1;
+    ui->text->scale.X = 0.01;
+    ui->text->scale.Y = 0.01;
+
+    Text_AddSubtext(ui->text, 0.0, 3.0, "ROTATION LOBBY");
 }
 
 void minor_think(void)
@@ -51,9 +46,7 @@ void minor_think(void)
 void minor_exit(void *unload_data)
 {
     if (!ui) return;
-
-    if (ui->test_text) Text_Destroy(ui->test_text);
-
+    if (ui->text) Text_Destroy(ui->text);
     HSD_Free(ui);
     ui = 0;
 }
