@@ -1,7 +1,9 @@
-// Rotation Lobby Minor Scene — TEST VERSION 5
-// Combines: calloc, MSRB, camera (COBJ_Alloc), Text_CreateText, auto-exit
+// Rotation Lobby Minor Scene — TEST VERSION 6
+// Static frame counter to test if calloc'd memory is being clobbered
 
 #include "RotationLobby.h"
+
+static int frame_count = 0;
 
 // CObjThink — clears screen to black
 void CObjThink(GOBJ *gobj)
@@ -16,7 +18,6 @@ void CObjThink(GOBJ *gobj)
 }
 
 typedef struct {
-    int frame_count;
     u8 local_port;
     u8 player_count;
     u8 msrb[MSRB_TOTAL_SIZE];
@@ -34,13 +35,14 @@ static void load_msrb(u8 *buf)
 
 void minor_load(void *load_data)
 {
+    frame_count = 0;
     ui = calloc(sizeof(LobbyUIState));
     load_msrb(ui->msrb);
 
     ui->local_port   = ui->msrb[OFST_LOCAL_PLAYER_INDEX];
     ui->player_count = ui->msrb[OFST_ROT_PLAYER_COUNT];
 
-    // Camera — minimal, just for screen clearing
+    // Camera
     GOBJ *cam_gobj = GObj_Create(2, 3, 128);
     COBJ *cam_cobj = COBJ_Alloc();
     GObj_AddObject(cam_gobj, 1, cam_cobj);
@@ -50,30 +52,26 @@ void minor_load(void *load_data)
     CObj_SetScissor(cam_cobj, 0, 480, 0, 640);
     cam_gobj->cobj_links = (1 << 0) + (1 << 1) + (1 << 2) + (1 << 3) + (1 << 4);
 
-    // Text — GameSetup style
-    ui->text = Text_CreateText(0, 0);
-    ui->text->kerning = 1;
-    ui->text->align = 1;
-    ui->text->use_aspect = 1;
-    ui->text->scale.X = 0.01;
-    ui->text->scale.Y = 0.01;
-
-    Text_AddSubtext(ui->text, 0.0, 3.0, "ROTATION LOBBY");
+    // Text — try Text_CreateText2 with canvas 0 (no canvas creation)
+    ui->text = Text_CreateText2(0, 0, 5.0, 10.0, 0.0, 20.0, 5.0);
+    Text_AddSubtext(ui->text, 0.0, 0.0, "ROTATION LOBBY");
+    GXColor white = {0xFF, 0xFF, 0xFF, 0xFF};
+    Text_SetColor(ui->text, 0, &white);
 }
 
 void minor_think(void)
 {
-    if (!ui) return;
-    ui->frame_count++;
+    frame_count++;
 
-    if (ui->frame_count >= 300)
+    if (frame_count >= 300)
         Scene_ExitMinor();
 }
 
 void minor_exit(void *unload_data)
 {
-    if (!ui) return;
-    if (ui->text) Text_Destroy(ui->text);
-    HSD_Free(ui);
-    ui = 0;
+    if (ui) {
+        if (ui->text) Text_Destroy(ui->text);
+        HSD_Free(ui);
+        ui = 0;
+    }
 }
