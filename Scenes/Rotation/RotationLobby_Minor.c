@@ -3,13 +3,13 @@
 //
 // Exports: minor_think, minor_load, minor_exit
 //
-// Receives SharedMinorData from major scene instead of loading MSRB directly.
+// Self-contained: loads MSRB directly via EXI, no major scene dependency.
+// This runs as a minor scene within the Slippi Online major (ID 8).
 
 #include "RotationLobby.h"
 
 // ---------------------------------------------------------------------------
 // Layout constants (text canvas coordinate space)
-// Canvas is roughly 30 units wide x 22 units tall
 // ---------------------------------------------------------------------------
 
 // Top bar
@@ -54,7 +54,7 @@
 #define SPECTATOR_WAIT      180   // 3 seconds
 
 // ---------------------------------------------------------------------------
-// Character name table (external char ID -> display name)
+// Character name table
 // ---------------------------------------------------------------------------
 static const char *char_names[] = {
     "Captain Falcon",  // 0x00
@@ -87,7 +87,7 @@ static const char *char_names[] = {
 #define NUM_CHARACTERS 26
 
 // ---------------------------------------------------------------------------
-// CObjThink — camera render callback (sets black bg, renders GX links)
+// CObjThink — camera render callback
 // ---------------------------------------------------------------------------
 void CObjThink(GOBJ *gobj)
 {
@@ -101,12 +101,10 @@ void CObjThink(GOBJ *gobj)
 }
 
 // ---------------------------------------------------------------------------
-// StockIcon frame helper — sets the animation frame for a character icon
-// (same logic as slippi-ssbm-c/Components/StockIcon.c _SetIcon)
+// StockIcon frame helper
 // ---------------------------------------------------------------------------
 static void StockIcon_SetFrame(StockIcon *si, u8 charId, u8 charColor)
 {
-    // Sheik animation index quirk
     u32 adjId = charId;
     if (charId == CKIND_SHEIK)
         adjId = 29;
@@ -122,7 +120,7 @@ static void StockIcon_SetFrame(StockIcon *si, u8 charId, u8 charColor)
 }
 
 // ---------------------------------------------------------------------------
-// Lobby UI state (allocated per-scene-load, freed on exit)
+// Lobby UI state — fully self-contained, loads MSRB directly
 // ---------------------------------------------------------------------------
 typedef struct {
     int frame_count;
@@ -131,6 +129,21 @@ typedef struct {
     u8 opp_char;
     u8 opp_color;
     int wait_count;
+
+    // Rotation state (parsed from MSRB)
+    u8 local_port;
+    u8 player_count;
+    u8 active_ports[2];
+    u8 waiting_ports[ROT_MAX_WAITING];
+    u8 games_played;
+    u8 last_winner;
+    u8 is_active_player;
+    u8 is_spectator;
+    u8 selected_char;
+    u8 selected_color;
+
+    // Raw MSRB buffer (for name lookups)
+    u8 msrb[MSRB_TOTAL_SIZE];
 
     // Text canvas
     int canvas_id;
@@ -162,16 +175,20 @@ typedef struct {
     HSD_Archive *gui_archive;
     StockIcon p1_icon;
     StockIcon p2_icon;
-
-    // Pointer to shared data from major scene
-    SharedMinorData *shared;
 } LobbyUIState;
 
 static LobbyUIState *ui = 0;
 
 // ---------------------------------------------------------------------------
-// MSRB helpers (read from shared data's MSRB copy)
+// MSRB helpers
 // ---------------------------------------------------------------------------
+static void load_msrb(u8 *buf)
+{
+    buf[0] = 0xB3;  // CMD_GET_MATCH_STATE
+    ExiSlippi_Transfer(buf, 1, ExiSlippi_TransferMode_WRITE);
+    ExiSlippi_Transfer(buf, MSRB_TOTAL_SIZE, ExiSlippi_TransferMode_READ);
+}
+
 static char *get_player_name(u8 *msrb, u8 port)
 {
     if (port > 3) return "???";
@@ -185,13 +202,13 @@ static char *get_connect_code(u8 *msrb, u8 port)
 }
 
 // ---------------------------------------------------------------------------
-// EXI communication for character sync (using ExiSlippi types)
+// EXI communication for character sync
 // ---------------------------------------------------------------------------
 static void send_char_selection(u8 char_id, u8 color_id)
 {
     ExiSlippi_CompleteStep_Query q;
     q.command = ExiSlippi_Command_GP_COMPLETE_STEP;
-    q.step_idx = 0;          // character pick
+    q.step_idx = 0;
     q.char_selection = char_id;
     q.char_color_selection = color_id;
     q.stage_selections[0] = 0;
@@ -218,13 +235,45 @@ static int fetch_opponent_selection(u8 *char_id, u8 *color_id)
 
 // ---------------------------------------------------------------------------
 // minor_load — called when the minor scene is entered
-// Receives SharedMinorData from major scene via load_data pointer.
+// Receives load_data pointer from ASM (currently NULL — we load MSRB ourselves)
 // ---------------------------------------------------------------------------
-void minor_load(SharedMinorData *data)
+void minor_load(void *load_data)
 {
-    ui = HSD_MemAlloc(sizeof(LobbyUIState));
-    memset(ui, 0, sizeof(LobbyUIState));
-    ui->shared = data;
+    ui = calloc(sizeof(LobbyUIState));
+
+    // Initialize waiting ports to 0xFF
+    for (int i = 0; i < ROT_MAX_WAITING; i++)
+        ui->waiting_ports[i] = 0xFF;
+
+    // Load MSRB directly via EXI
+    load_msrb(ui->msrb);
+
+    // Parse rotation state
+    ui->local_port      = ui->msrb[OFST_LOCAL_PLAYER_INDEX];
+    ui->player_count    = ui->msrb[OFST_ROT_PLAYER_COUNT];
+    ui->active_ports[0] = ui->msrb[OFST_ROT_ACTIVE_P1];
+    ui->active_ports[1] = ui->msrb[OFST_ROT_ACTIVE_P2];
+    ui->games_played    = ui->msrb[OFST_ROT_GAMES_PLAYED];
+    ui->last_winner     = ui->msrb[OFST_ROT_LAST_WINNER];
+    ui->is_spectator    = ui->msrb[OFST_IS_SPECTATOR];
+
+    for (int i = 0; i < ROT_MAX_WAITING; i++)
+        ui->waiting_ports[i] = ui->msrb[OFST_ROT_QUEUE_START + i];
+
+    ui->is_active_player =
+        (ui->local_port == ui->active_ports[0] ||
+         ui->local_port == ui->active_ports[1]);
+
+    // Default character (Fox)
+    ui->selected_char = 0x02;
+    ui->selected_color = 0;
+
+    // Count waiting players
+    ui->wait_count = 0;
+    for (int i = 0; i < ROT_MAX_WAITING; i++) {
+        if (ui->waiting_ports[i] != 0xFF)
+            ui->wait_count++;
+    }
 
     // =================================================================
     // 3D rendering setup — camera, fog, lights from GameSetup_gui.dat
@@ -232,7 +281,7 @@ void minor_load(SharedMinorData *data)
     ui->gui_archive = Archive_LoadFile("GameSetup_gui.dat");
     GUI_GameSetup *gui = Archive_GetPublicAddress(ui->gui_archive, "ScGamTour_scene_data");
 
-    // Camera — required for GX rendering pipeline
+    // Camera
     GOBJ *cam_gobj = GObj_Create(2, 3, 128);
     COBJ *cam_cobj = COBJ_LoadDesc(gui->cobjs[0]);
     GObj_AddObject(cam_gobj, 1, cam_cobj);
@@ -251,12 +300,9 @@ void minor_load(SharedMinorData *data)
     GObj_AddObject(light_gobj, 2, lobj);
     GObj_AddGXLink(light_gobj, GXLink_LObj, 0, 128);
 
-    // Skip JOBJ[0] Background — crashes due to external file refs
-
     // =================================================================
     // StockIcons for P1 and P2 character display
     // =================================================================
-    // P1 stock icon
     ui->p1_icon.jobj_set = gui->jobjs[GUI_GameSetup_JOBJ_StockIcon];
     ui->p1_icon.gobj = JOBJ_LoadSet(0, ui->p1_icon.jobj_set, 0, 0, 3, 1, 0, 0);
     ui->p1_icon.root_jobj = ui->p1_icon.gobj->hsd_object;
@@ -264,7 +310,6 @@ void minor_load(SharedMinorData *data)
     ui->p1_icon.root_jobj->trans.Y = 4.0;
     ui->p1_icon.root_jobj->trans.Z = 0.0;
 
-    // P2 stock icon
     ui->p2_icon.jobj_set = gui->jobjs[GUI_GameSetup_JOBJ_StockIcon];
     ui->p2_icon.gobj = JOBJ_LoadSet(0, ui->p2_icon.jobj_set, 0, 0, 3, 1, 0, 0);
     ui->p2_icon.root_jobj = ui->p2_icon.gobj->hsd_object;
@@ -272,24 +317,18 @@ void minor_load(SharedMinorData *data)
     ui->p2_icon.root_jobj->trans.Y = 4.0;
     ui->p2_icon.root_jobj->trans.Z = 0.0;
 
-    // Set local player's icon to their selected character
+    // Set local player's icon
     {
-        int is_p1 = (data->local_port == data->active_ports[0]);
-        if (data->is_active_player && is_p1)
-            StockIcon_SetFrame(&ui->p1_icon, data->selected_char, data->selected_color);
-        if (data->is_active_player && !is_p1)
-            StockIcon_SetFrame(&ui->p2_icon, data->selected_char, data->selected_color);
-    }
-    // Opponent icon stays at default until their selection arrives
-
-    // Count waiting players
-    ui->wait_count = 0;
-    for (int i = 0; i < ROT_MAX_WAITING; i++) {
-        if (data->waiting_ports[i] != 0xFF)
-            ui->wait_count++;
+        int is_p1 = (ui->local_port == ui->active_ports[0]);
+        if (ui->is_active_player && is_p1)
+            StockIcon_SetFrame(&ui->p1_icon, ui->selected_char, ui->selected_color);
+        if (ui->is_active_player && !is_p1)
+            StockIcon_SetFrame(&ui->p2_icon, ui->selected_char, ui->selected_color);
     }
 
-    // --- Colors ---
+    // =================================================================
+    // Text UI
+    // =================================================================
     GXColor white   = {0xFF, 0xFF, 0xFF, 0xFF};
     GXColor green   = {0x21, 0xBA, 0x45, 0xFF};
     GXColor gray    = {0x99, 0x99, 0x99, 0xFF};
@@ -297,69 +336,54 @@ void minor_load(SharedMinorData *data)
     GXColor red     = {0xDB, 0x28, 0x28, 0xFF};
     GXColor cyan    = {0x00, 0xCC, 0xCC, 0xFF};
 
-    // --- Create canvas ---
-    // Background is black via CObj_SetEraseColor in CObjThink
     ui->canvas_id = Text_CreateCanvas(0, 0, 0, 13, 80, 8, 0, 0);
 
-    // =====================================================================
-    // TOP BAR: Lobby name | Timer | Player count
-    // =====================================================================
-
-    // Lobby name = local player's connect code
+    // --- TOP BAR ---
     ui->lobby_name_text = Text_CreateText2(0, ui->canvas_id,
         TOP_LABEL_X, TOP_Y, 0.0, 10.0, 1.5);
-    char *code = get_connect_code(data->msrb, data->local_port);
+    char *code = get_connect_code(ui->msrb, ui->local_port);
     Text_AddSubtext(ui->lobby_name_text, 0.0, 0.0, "%s", code);
     Text_SetColor(ui->lobby_name_text, 0, &cyan);
     Text_SetScale(ui->lobby_name_text, 0, 0.9, 0.9);
 
-    // Timer
     ui->timer_text = Text_CreateText2(0, ui->canvas_id,
         TOP_TIMER_X, TOP_Y, 0.0, 6.0, 1.5);
     Text_AddSubtext(ui->timer_text, 0.0, 0.0, "0:30");
     Text_SetColor(ui->timer_text, 0, &white);
     Text_SetScale(ui->timer_text, 0, 1.1, 1.1);
 
-    // Player count
     ui->player_count_text = Text_CreateText2(0, ui->canvas_id,
         TOP_COUNT_X, TOP_Y, 0.0, 8.0, 1.5);
     Text_AddSubtext(ui->player_count_text, 0.0, 0.0,
-        "%d Players", data->player_count);
+        "%d Players", ui->player_count);
     Text_SetColor(ui->player_count_text, 0, &gray);
     Text_SetScale(ui->player_count_text, 0, 0.8, 0.8);
 
-    // =====================================================================
-    // MATCH PANEL: P1 name + char   VS   P2 name + char
-    // =====================================================================
-
-    // "PLAYERS IN MATCH" header
+    // --- MATCH PANEL ---
     ui->match_header_text = Text_CreateText2(0, ui->canvas_id,
         PANEL_LEFT + 3.0, MATCH_HEADER_Y, 0.0, 16.0, 1.5);
     Text_AddSubtext(ui->match_header_text, 0.0, 0.0, "PLAYERS IN MATCH");
     Text_SetColor(ui->match_header_text, 0, &green);
     Text_SetScale(ui->match_header_text, 0, 0.9, 0.9);
 
-    // Player 1 name
-    char *p1_name = get_player_name(data->msrb, data->active_ports[0]);
+    // Player 1
+    char *p1_name = get_player_name(ui->msrb, ui->active_ports[0]);
     ui->p1_text = Text_CreateText2(0, ui->canvas_id,
         P1_NAME_X, P1_NAME_Y, 0.0, 7.0, 1.5);
     Text_AddSubtext(ui->p1_text, 0.0, 0.0, "%s", p1_name);
     Text_SetColor(ui->p1_text, 0, &white);
     Text_SetScale(ui->p1_text, 0, 1.0, 1.0);
 
-    // Player 1 character
     ui->p1_char_text = Text_CreateText2(0, ui->canvas_id,
         P1_NAME_X, P1_CHAR_Y, 0.0, 7.0, 1.5);
     Text_AddSubtext(ui->p1_char_text, 0.0, 0.0,
-        "%s", (char *)char_names[data->selected_char % NUM_CHARACTERS]);
+        "%s", (char *)char_names[ui->selected_char % NUM_CHARACTERS]);
     Text_SetColor(ui->p1_char_text, 0, &green);
     Text_SetScale(ui->p1_char_text, 0, 0.7, 0.7);
 
-    // Player 1 ready indicator
     ui->p1_ready_text = Text_CreateText2(0, ui->canvas_id,
         P1_NAME_X, P1_READY_Y, 0.0, 7.0, 1.5);
-    if (data->is_active_player &&
-        data->local_port == data->active_ports[0])
+    if (ui->is_active_player && ui->local_port == ui->active_ports[0])
     {
         Text_AddSubtext(ui->p1_ready_text, 0.0, 0.0, "Picking...");
         Text_SetColor(ui->p1_ready_text, 0, &yellow);
@@ -371,33 +395,30 @@ void minor_load(SharedMinorData *data)
     }
     Text_SetScale(ui->p1_ready_text, 0, 0.55, 0.55);
 
-    // "VS" text
+    // VS
     ui->vs_text = Text_CreateText2(0, ui->canvas_id,
         VS_X, VS_Y, 0.0, 3.0, 2.0);
     Text_AddSubtext(ui->vs_text, 0.0, 0.0, "VS");
     Text_SetColor(ui->vs_text, 0, &red);
     Text_SetScale(ui->vs_text, 0, 1.5, 1.5);
 
-    // Player 2 name
-    char *p2_name = get_player_name(data->msrb, data->active_ports[1]);
+    // Player 2
+    char *p2_name = get_player_name(ui->msrb, ui->active_ports[1]);
     ui->p2_text = Text_CreateText2(0, ui->canvas_id,
         P2_NAME_X, P2_NAME_Y, 0.0, 7.0, 1.5);
     Text_AddSubtext(ui->p2_text, 0.0, 0.0, "%s", p2_name);
     Text_SetColor(ui->p2_text, 0, &white);
     Text_SetScale(ui->p2_text, 0, 1.0, 1.0);
 
-    // Player 2 character (unknown until fetched)
     ui->p2_char_text = Text_CreateText2(0, ui->canvas_id,
         P2_NAME_X, P2_CHAR_Y, 0.0, 7.0, 1.5);
     Text_AddSubtext(ui->p2_char_text, 0.0, 0.0, "...");
     Text_SetColor(ui->p2_char_text, 0, &green);
     Text_SetScale(ui->p2_char_text, 0, 0.7, 0.7);
 
-    // Player 2 ready indicator
     ui->p2_ready_text = Text_CreateText2(0, ui->canvas_id,
         P2_NAME_X, P2_READY_Y, 0.0, 7.0, 1.5);
-    if (data->is_active_player &&
-        data->local_port == data->active_ports[1])
+    if (ui->is_active_player && ui->local_port == ui->active_ports[1])
     {
         Text_AddSubtext(ui->p2_ready_text, 0.0, 0.0, "Picking...");
         Text_SetColor(ui->p2_ready_text, 0, &yellow);
@@ -409,10 +430,7 @@ void minor_load(SharedMinorData *data)
     }
     Text_SetScale(ui->p2_ready_text, 0, 0.55, 0.55);
 
-    // =====================================================================
-    // SIDEBAR: Waiting area
-    // =====================================================================
-
+    // --- SIDEBAR ---
     if (ui->wait_count > 0)
     {
         ui->side_header_text = Text_CreateText2(0, ui->canvas_id,
@@ -424,11 +442,10 @@ void minor_load(SharedMinorData *data)
         float y = SIDE_FIRST_Y;
         for (int i = 0; i < ui->wait_count; i++)
         {
-            u8 port = data->waiting_ports[i];
+            u8 port = ui->waiting_ports[i];
             if (port == 0xFF) continue;
 
-            char *name = get_player_name(data->msrb, port);
-
+            char *name = get_player_name(ui->msrb, port);
             ui->queue_texts[i] = Text_CreateText2(0, ui->canvas_id,
                 SIDE_LEFT, y, 0.0, SIDE_WIDTH, 1.2);
 
@@ -445,26 +462,21 @@ void minor_load(SharedMinorData *data)
                 Text_SetColor(ui->queue_texts[i], 0, &gray);
             }
             Text_SetScale(ui->queue_texts[i], 0, 0.6, 0.6);
-
             y += SIDE_LINE_H;
         }
     }
 
-    // =====================================================================
-    // BOTTOM BAR: Game count + Controls prompt
-    // =====================================================================
-
+    // --- BOTTOM BAR ---
     ui->game_text = Text_CreateText2(0, ui->canvas_id,
         BOT_GAME_X, BOT_Y, 0.0, 8.0, 1.5);
     Text_AddSubtext(ui->game_text, 0.0, 0.0,
-        "Game %d", data->games_played + 1);
+        "Game %d", ui->games_played + 1);
     Text_SetColor(ui->game_text, 0, &gray);
     Text_SetScale(ui->game_text, 0, 0.7, 0.7);
 
     ui->prompt_text = Text_CreateText2(0, ui->canvas_id,
         BOT_PROMPT_X, BOT_Y, 0.0, 20.0, 1.5);
-
-    if (data->is_active_player)
+    if (ui->is_active_player)
     {
         Text_AddSubtext(ui->prompt_text, 0.0, 0.0,
             "D-Pad: Change Char    A: Confirm");
@@ -486,22 +498,20 @@ void minor_load(SharedMinorData *data)
 void minor_think(void)
 {
     if (!ui) return;
-    SharedMinorData *data = ui->shared;
     ui->frame_count++;
 
     // --- Update timer display ---
     {
         int remaining;
-        if (data->is_active_player)
+        if (ui->is_active_player)
             remaining = TIMER_TOTAL_FRAMES - ui->frame_count;
         else
             remaining = SPECTATOR_WAIT - ui->frame_count;
 
         if (remaining < 0) remaining = 0;
-
         int secs = remaining / 60;
 
-        if (data->is_active_player)
+        if (ui->is_active_player)
         {
             if (secs <= 5)
             {
@@ -527,56 +537,51 @@ void minor_think(void)
     }
 
     // --- Active player input ---
-    if (data->is_active_player && !ui->local_ready)
+    if (ui->is_active_player && !ui->local_ready)
     {
-        int is_p1 = (data->local_port == data->active_ports[0]);
+        int is_p1 = (ui->local_port == ui->active_ports[0]);
         Text *my_char_text = is_p1 ? ui->p1_char_text : ui->p2_char_text;
         Text *my_ready_text = is_p1 ? ui->p1_ready_text : ui->p2_ready_text;
         StockIcon *my_icon = is_p1 ? &ui->p1_icon : &ui->p2_icon;
 
-        HSD_Pad *pad = PadGet(data->local_port, PADGET_ENGINE);
+        HSD_Pad *pad = PadGet(ui->local_port, PADGET_ENGINE);
 
-        // D-pad left/right: cycle character
         if (pad->down & HSD_BUTTON_DPAD_RIGHT)
         {
-            data->selected_char = (data->selected_char + 1) % NUM_CHARACTERS;
+            ui->selected_char = (ui->selected_char + 1) % NUM_CHARACTERS;
             Text_SetText(my_char_text, 0,
-                "%s", (char *)char_names[data->selected_char]);
-            StockIcon_SetFrame(my_icon, data->selected_char, data->selected_color);
+                "%s", (char *)char_names[ui->selected_char]);
+            StockIcon_SetFrame(my_icon, ui->selected_char, ui->selected_color);
         }
         if (pad->down & HSD_BUTTON_DPAD_LEFT)
         {
-            data->selected_char =
-                (data->selected_char + NUM_CHARACTERS - 1) % NUM_CHARACTERS;
+            ui->selected_char =
+                (ui->selected_char + NUM_CHARACTERS - 1) % NUM_CHARACTERS;
             Text_SetText(my_char_text, 0,
-                "%s", (char *)char_names[data->selected_char]);
-            StockIcon_SetFrame(my_icon, data->selected_char, data->selected_color);
+                "%s", (char *)char_names[ui->selected_char]);
+            StockIcon_SetFrame(my_icon, ui->selected_char, ui->selected_color);
         }
-
-        // D-pad up/down: cycle color
         if (pad->down & HSD_BUTTON_DPAD_UP)
         {
-            data->selected_color = (data->selected_color + 1) % 6;
+            ui->selected_color = (ui->selected_color + 1) % 6;
             Text_SetText(my_char_text, 0, "%s [%d]",
-                (char *)char_names[data->selected_char],
-                data->selected_color + 1);
-            StockIcon_SetFrame(my_icon, data->selected_char, data->selected_color);
+                (char *)char_names[ui->selected_char],
+                ui->selected_color + 1);
+            StockIcon_SetFrame(my_icon, ui->selected_char, ui->selected_color);
         }
         if (pad->down & HSD_BUTTON_DPAD_DOWN)
         {
-            data->selected_color = (data->selected_color + 5) % 6;
+            ui->selected_color = (ui->selected_color + 5) % 6;
             Text_SetText(my_char_text, 0, "%s [%d]",
-                (char *)char_names[data->selected_char],
-                data->selected_color + 1);
-            StockIcon_SetFrame(my_icon, data->selected_char, data->selected_color);
+                (char *)char_names[ui->selected_char],
+                ui->selected_color + 1);
+            StockIcon_SetFrame(my_icon, ui->selected_char, ui->selected_color);
         }
 
-        // A button: confirm selection
         if (pad->down & HSD_BUTTON_A)
         {
             ui->local_ready = 1;
-            data->local_ready = 1;
-            send_char_selection(data->selected_char, data->selected_color);
+            send_char_selection(ui->selected_char, ui->selected_color);
 
             GXColor green = {0x21, 0xBA, 0x45, 0xFF};
             Text_SetText(my_ready_text, 0, "READY");
@@ -589,7 +594,7 @@ void minor_think(void)
     }
 
     // --- Poll for opponent's selection ---
-    if (data->is_active_player && !ui->opponent_ready)
+    if (ui->is_active_player && !ui->opponent_ready)
     {
         if (ui->frame_count % 10 == 0)
         {
@@ -597,12 +602,11 @@ void minor_think(void)
             if (fetch_opponent_selection(&opp_char, &opp_color))
             {
                 ui->opponent_ready = 1;
-                data->opponent_ready = 1;
                 ui->opp_char = opp_char;
                 ui->opp_color = opp_color;
 
                 int local_is_p1 =
-                    (data->local_port == data->active_ports[0]);
+                    (ui->local_port == ui->active_ports[0]);
                 Text *opp_char_text = local_is_p1 ?
                     ui->p2_char_text : ui->p1_char_text;
                 Text *opp_ready_text = local_is_p1 ?
@@ -627,7 +631,7 @@ void minor_think(void)
     // --- Check if we should advance ---
     int should_advance = 0;
 
-    if (data->is_active_player)
+    if (ui->is_active_player)
     {
         if (ui->local_ready && ui->opponent_ready)
             should_advance = 1;
@@ -635,7 +639,7 @@ void minor_think(void)
         if (ui->frame_count >= TIMER_TOTAL_FRAMES)
         {
             if (!ui->local_ready)
-                send_char_selection(data->selected_char, data->selected_color);
+                send_char_selection(ui->selected_char, ui->selected_color);
             should_advance = 1;
         }
     }
@@ -646,19 +650,17 @@ void minor_think(void)
     }
 
     if (should_advance)
-    {
         Scene_ExitMinor();
-    }
 }
 
 // ---------------------------------------------------------------------------
 // minor_exit — called when leaving the minor scene
 // ---------------------------------------------------------------------------
-void minor_exit(SharedMinorData *data)
+void minor_exit(void *unload_data)
 {
     if (!ui) return;
 
-    // Destroy all text objects
+    // Destroy text objects
     if (ui->lobby_name_text)   Text_Destroy(ui->lobby_name_text);
     if (ui->timer_text)        Text_Destroy(ui->timer_text);
     if (ui->player_count_text) Text_Destroy(ui->player_count_text);
@@ -680,7 +682,7 @@ void minor_exit(SharedMinorData *data)
             Text_Destroy(ui->queue_texts[i]);
     }
 
-    // Free GameSetup_gui.dat archive (StockIcon JOBJs reference data inside)
+    // Free archive
     if (ui->gui_archive)
     {
         Archive_Free(ui->gui_archive);
