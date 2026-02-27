@@ -13,6 +13,9 @@ LINK_PATH="../../melee.link"
 BUILD_PATH="../../build/"
 OUTPUT_PATH="../../output/"
 
+mkdir -p "$OUTPUT_PATH"
+mkdir -p "$BUILD_PATH"
+
 echo "Building Rotation Lobby Scene..."
 
 # Compile major scene (mjFunction) — creates .dat
