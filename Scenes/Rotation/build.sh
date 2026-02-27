@@ -16,7 +16,7 @@ OUTPUT_PATH="../../output/"
 echo "Building Rotation Lobby Scene..."
 
 # Compile major scene (mjFunction) — creates .dat
-mono $COMPILER_PATH -ff \
+$COMPILER_PATH -ff \
   -i "RotationLobby_Major.c" \
   -s mjFunction \
   -t "$TK_PATH/mjFunction.txt" \
@@ -26,7 +26,7 @@ mono $COMPILER_PATH -ff \
   -ow -c
 
 # Compile minor scene (mnFunction) into same .dat
-mono $COMPILER_PATH -ff \
+$COMPILER_PATH -ff \
   -i "RotationLobby_Minor.c" "../../Components/StockIcon.c" "../../Game/Characters.c" \
   -s mnFunction \
   -t "$TK_PATH/mnFunction.txt" \
@@ -36,6 +36,6 @@ mono $COMPILER_PATH -ff \
   -c
 
 # Trim unused data from .dat
-mono $COMPILER_PATH -trim "$OUTPUT_PATH/RotationLobby.dat"
+$COMPILER_PATH -trim "$OUTPUT_PATH/RotationLobby.dat"
 
 echo "Built RotationLobby.dat successfully"
