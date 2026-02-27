@@ -87,6 +87,77 @@ static const char *char_names[] = {
 #define NUM_CHARACTERS 26
 
 // ---------------------------------------------------------------------------
+// Static camera/fog/light descriptors — no external .dat needed
+// ---------------------------------------------------------------------------
+
+// Eye position: looking from Z towards origin
+static WOBJDesc eye_desc = {
+    .class_name = 0,
+    .pos = {0.0f, 0.0f, 50.0f},
+    .robjdesc = 0,
+    .next = 0,
+};
+
+// Interest (look-at) point: origin
+static WOBJDesc interest_desc = {
+    .class_name = 0,
+    .pos = {0.0f, 0.0f, 0.0f},
+    .robjdesc = 0,
+    .next = 0,
+};
+
+// Camera descriptor: perspective, full 640x480 viewport
+static COBJDesc cam_desc = {
+    .class_name = 0,
+    .flags = 0,
+    .projection_type = 1,       // 1 = perspective
+    .viewport_left = 0,
+    .viewport_right = 640,
+    .viewport_top = 0,
+    .viewport_bottom = 480,
+    .scissor_lr = (0 << 16) | 640,
+    .scissor_tb = (0 << 16) | 480,
+    .eye_desc = &eye_desc,
+    .interest_desc = &interest_desc,
+    .roll = 0.0f,
+    .vector = 0,
+    .near = 1.0f,
+    .far = 1000.0f,
+    .projection_param.perspective.fov = 60.0f,
+    .projection_param.perspective.aspect = 1.333333f,
+};
+
+// Fog descriptor: black fog, effectively disabled (far range)
+static HSD_FogDesc fog_desc = {
+    .type = 2,                  // GX_FOG_LIN
+    .fog_adj = 0,
+    .start = 900.0f,
+    .end = 1000.0f,
+    .color = {0, 0, 0, 255},
+    .aobj = 0,
+};
+
+// Light position
+static WOBJDesc light_pos_desc = {
+    .class_name = 0,
+    .pos = {0.0f, 100.0f, 100.0f},
+    .robjdesc = 0,
+    .next = 0,
+};
+
+// Light descriptor: white ambient light
+static LObjDesc light_desc = {
+    .class_name = 0,
+    .next = 0,
+    .flags = 0,             // ambient
+    .attnflags = 0,
+    .color = {255, 255, 255, 255},
+    .position = &light_pos_desc,
+    .interest = 0,
+    .u.p = 0,
+};
+
+// ---------------------------------------------------------------------------
 // CObjThink — camera render callback (identical to Ranked GameSetup)
 // ---------------------------------------------------------------------------
 void CObjThink(GOBJ *gobj)
@@ -151,9 +222,6 @@ typedef struct {
     // Bottom bar
     Text *game_text;
     Text *prompt_text;
-
-    // 3D rendering
-    HSD_Archive *gui_archive;
 } LobbyUIState;
 
 static LobbyUIState *ui = 0;
@@ -214,7 +282,6 @@ static int fetch_opponent_selection(u8 *char_id, u8 *color_id)
 
 // ---------------------------------------------------------------------------
 // minor_load — called when the minor scene is entered
-// Receives load_data pointer from ASM (currently NULL — we load MSRB ourselves)
 // ---------------------------------------------------------------------------
 void minor_load(void *load_data)
 {
@@ -255,35 +322,25 @@ void minor_load(void *load_data)
     }
 
     // =================================================================
-    // 3D rendering setup — camera, fog, lights from GameSetup_gui.dat
-    // Identical to Ranked GameSetup.c lines 60-87
+    // 3D rendering setup — own descriptors, no external .dat
     // =================================================================
-    ui->gui_archive = Archive_LoadFile("GameSetup_gui.dat");
-    GUI_GameSetup *gui = Archive_GetPublicAddress(ui->gui_archive, "ScGamTour_scene_data");
 
-    // Camera — exact same pattern as GameSetup.c
+    // Camera
     GOBJ *cam_gobj = GObj_Create(2, 3, 128);
-    COBJ *cam_cobj = COBJ_LoadDesc(gui->cobjs[0]);
+    COBJ *cam_cobj = COBJ_LoadDesc(&cam_desc);
     GObj_AddObject(cam_gobj, 1, cam_cobj);
     GOBJ_InitCamera(cam_gobj, CObjThink, 0);
     cam_gobj->cobj_links = (1 << 0) + (1 << 1) + (1 << 2) + (1 << 3) + (1 << 4);
 
-    // Store cobj desc to static pointer (needed for MainMenu_CamRotateThink)
-    void **stc_cam_cobj = (R13 + (-0x4ADC));
-    *stc_cam_cobj = gui->cobjs[0];
-
-    // Camera rotation proc — same as GameSetup.c
-    GObj_AddProc(cam_gobj, MainMenu_CamRotateThink, 5);
-
     // Fog
     GOBJ *fog_gobj = GObj_Create(14, 2, 0);
-    HSD_Fog *fog = Fog_LoadDesc(gui->fog[0]);
+    HSD_Fog *fog = Fog_LoadDesc(&fog_desc);
     GObj_AddObject(fog_gobj, 4, fog);
     GObj_AddGXLink(fog_gobj, GXLink_Fog, 0, 128);
 
-    // Lights
+    // Light
     GOBJ *light_gobj = GObj_Create(3, 4, 128);
-    LOBJ *lobj = LObj_LoadAll(gui->lights);
+    LOBJ *lobj = LObj_LoadDesc(&light_desc);
     GObj_AddObject(light_gobj, 2, lobj);
     GObj_AddGXLink(light_gobj, GXLink_LObj, 0, 128);
 
@@ -633,13 +690,6 @@ void minor_exit(void *unload_data)
     {
         if (ui->queue_texts[i])
             Text_Destroy(ui->queue_texts[i]);
-    }
-
-    // Free archive
-    if (ui->gui_archive)
-    {
-        Archive_Free(ui->gui_archive);
-        ui->gui_archive = 0;
     }
 
     HSD_Free(ui);

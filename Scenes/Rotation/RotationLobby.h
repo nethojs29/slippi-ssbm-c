@@ -6,8 +6,6 @@
 
 #include "../../m-ex/MexTK/mex.h"
 #include "../../ExiSlippi.h"
-#include "../../Files.h"
-#include "../../Components/StockIcon.h"
 
 // ---------------------------------------------------------------------------
 // MSRB field offsets (must match Online.s)
