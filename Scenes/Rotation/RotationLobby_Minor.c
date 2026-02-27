@@ -87,7 +87,7 @@ static const char *char_names[] = {
 #define NUM_CHARACTERS 26
 
 // ---------------------------------------------------------------------------
-// CObjThink — camera render callback
+// CObjThink — camera render callback (identical to Ranked GameSetup)
 // ---------------------------------------------------------------------------
 void CObjThink(GOBJ *gobj)
 {
@@ -98,25 +98,6 @@ void CObjThink(GOBJ *gobj)
     CObj_EraseScreen(cobj, 1, 0, 1);
     CObj_RenderGXLinks(gobj, 7);
     CObj_EndCurrent();
-}
-
-// ---------------------------------------------------------------------------
-// StockIcon frame helper
-// ---------------------------------------------------------------------------
-static void StockIcon_SetFrame(StockIcon *si, u8 charId, u8 charColor)
-{
-    u32 adjId = charId;
-    if (charId == CKIND_SHEIK)
-        adjId = 29;
-    else if (charId > CKIND_SHEIK)
-        adjId--;
-
-    JOBJ_AddSetAnim(si->root_jobj, si->jobj_set, 0);
-    JOBJ_ReqAnimAll(si->root_jobj, adjId + (30 * charColor));
-    JOBJ_AnimAll(si->root_jobj);
-    JOBJ_RemoveAnimAll(si->root_jobj);
-    si->state.char_id = charId;
-    si->state.color_id = charColor;
 }
 
 // ---------------------------------------------------------------------------
@@ -173,8 +154,6 @@ typedef struct {
 
     // 3D rendering
     HSD_Archive *gui_archive;
-    StockIcon p1_icon;
-    StockIcon p2_icon;
 } LobbyUIState;
 
 static LobbyUIState *ui = 0;
@@ -277,16 +256,24 @@ void minor_load(void *load_data)
 
     // =================================================================
     // 3D rendering setup — camera, fog, lights from GameSetup_gui.dat
+    // Identical to Ranked GameSetup.c lines 60-87
     // =================================================================
     ui->gui_archive = Archive_LoadFile("GameSetup_gui.dat");
     GUI_GameSetup *gui = Archive_GetPublicAddress(ui->gui_archive, "ScGamTour_scene_data");
 
-    // Camera
+    // Camera — exact same pattern as GameSetup.c
     GOBJ *cam_gobj = GObj_Create(2, 3, 128);
     COBJ *cam_cobj = COBJ_LoadDesc(gui->cobjs[0]);
     GObj_AddObject(cam_gobj, 1, cam_cobj);
     GOBJ_InitCamera(cam_gobj, CObjThink, 0);
-    cam_gobj->cobj_links = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4);
+    cam_gobj->cobj_links = (1 << 0) + (1 << 1) + (1 << 2) + (1 << 3) + (1 << 4);
+
+    // Store cobj desc to static pointer (needed for MainMenu_CamRotateThink)
+    void **stc_cam_cobj = (R13 + (-0x4ADC));
+    *stc_cam_cobj = gui->cobjs[0];
+
+    // Camera rotation proc — same as GameSetup.c
+    GObj_AddProc(cam_gobj, MainMenu_CamRotateThink, 5);
 
     // Fog
     GOBJ *fog_gobj = GObj_Create(14, 2, 0);
@@ -299,32 +286,6 @@ void minor_load(void *load_data)
     LOBJ *lobj = LObj_LoadAll(gui->lights);
     GObj_AddObject(light_gobj, 2, lobj);
     GObj_AddGXLink(light_gobj, GXLink_LObj, 0, 128);
-
-    // =================================================================
-    // StockIcons for P1 and P2 character display
-    // =================================================================
-    ui->p1_icon.jobj_set = gui->jobjs[GUI_GameSetup_JOBJ_StockIcon];
-    ui->p1_icon.gobj = JOBJ_LoadSet(0, ui->p1_icon.jobj_set, 0, 0, 3, 1, 0, 0);
-    ui->p1_icon.root_jobj = ui->p1_icon.gobj->hsd_object;
-    ui->p1_icon.root_jobj->trans.X = -8.0;
-    ui->p1_icon.root_jobj->trans.Y = 4.0;
-    ui->p1_icon.root_jobj->trans.Z = 0.0;
-
-    ui->p2_icon.jobj_set = gui->jobjs[GUI_GameSetup_JOBJ_StockIcon];
-    ui->p2_icon.gobj = JOBJ_LoadSet(0, ui->p2_icon.jobj_set, 0, 0, 3, 1, 0, 0);
-    ui->p2_icon.root_jobj = ui->p2_icon.gobj->hsd_object;
-    ui->p2_icon.root_jobj->trans.X = 8.0;
-    ui->p2_icon.root_jobj->trans.Y = 4.0;
-    ui->p2_icon.root_jobj->trans.Z = 0.0;
-
-    // Set local player's icon
-    {
-        int is_p1 = (ui->local_port == ui->active_ports[0]);
-        if (ui->is_active_player && is_p1)
-            StockIcon_SetFrame(&ui->p1_icon, ui->selected_char, ui->selected_color);
-        if (ui->is_active_player && !is_p1)
-            StockIcon_SetFrame(&ui->p2_icon, ui->selected_char, ui->selected_color);
-    }
 
     // =================================================================
     // Text UI
@@ -542,7 +503,6 @@ void minor_think(void)
         int is_p1 = (ui->local_port == ui->active_ports[0]);
         Text *my_char_text = is_p1 ? ui->p1_char_text : ui->p2_char_text;
         Text *my_ready_text = is_p1 ? ui->p1_ready_text : ui->p2_ready_text;
-        StockIcon *my_icon = is_p1 ? &ui->p1_icon : &ui->p2_icon;
 
         HSD_Pad *pad = PadGet(ui->local_port, PADGET_ENGINE);
 
@@ -551,7 +511,6 @@ void minor_think(void)
             ui->selected_char = (ui->selected_char + 1) % NUM_CHARACTERS;
             Text_SetText(my_char_text, 0,
                 "%s", (char *)char_names[ui->selected_char]);
-            StockIcon_SetFrame(my_icon, ui->selected_char, ui->selected_color);
         }
         if (pad->down & HSD_BUTTON_DPAD_LEFT)
         {
@@ -559,7 +518,6 @@ void minor_think(void)
                 (ui->selected_char + NUM_CHARACTERS - 1) % NUM_CHARACTERS;
             Text_SetText(my_char_text, 0,
                 "%s", (char *)char_names[ui->selected_char]);
-            StockIcon_SetFrame(my_icon, ui->selected_char, ui->selected_color);
         }
         if (pad->down & HSD_BUTTON_DPAD_UP)
         {
@@ -567,7 +525,6 @@ void minor_think(void)
             Text_SetText(my_char_text, 0, "%s [%d]",
                 (char *)char_names[ui->selected_char],
                 ui->selected_color + 1);
-            StockIcon_SetFrame(my_icon, ui->selected_char, ui->selected_color);
         }
         if (pad->down & HSD_BUTTON_DPAD_DOWN)
         {
@@ -575,7 +532,6 @@ void minor_think(void)
             Text_SetText(my_char_text, 0, "%s [%d]",
                 (char *)char_names[ui->selected_char],
                 ui->selected_color + 1);
-            StockIcon_SetFrame(my_icon, ui->selected_char, ui->selected_color);
         }
 
         if (pad->down & HSD_BUTTON_A)
@@ -611,14 +567,11 @@ void minor_think(void)
                     ui->p2_char_text : ui->p1_char_text;
                 Text *opp_ready_text = local_is_p1 ?
                     ui->p2_ready_text : ui->p1_ready_text;
-                StockIcon *opp_icon = local_is_p1 ?
-                    &ui->p2_icon : &ui->p1_icon;
 
                 if (opp_char < NUM_CHARACTERS)
                 {
                     Text_SetText(opp_char_text, 0,
                         "%s", (char *)char_names[opp_char]);
-                    StockIcon_SetFrame(opp_icon, opp_char, opp_color);
                 }
 
                 GXColor green = {0x21, 0xBA, 0x45, 0xFF};
