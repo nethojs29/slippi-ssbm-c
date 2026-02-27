@@ -128,7 +128,7 @@ void major_exit(void)
 MinorScene minor_scene[] = {
     {
         .minor_id = 0,                     // ROT_MINOR_LOBBY
-        .heap_kind = SCENEHEAPKIND_UNK3,   // 3 = persistent heaps
+        .heap_kind = 3,                    // SCENEHEAPKIND_UNK3 = persistent heaps
         .minor_prep = (void *)ScenePrep,
         .minor_decide = (void *)SceneDecide,
         .minor_kind = 0x20,                // Classic Mode Splash (triggers m-ex .dat load)
