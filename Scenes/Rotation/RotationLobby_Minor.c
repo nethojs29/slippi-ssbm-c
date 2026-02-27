@@ -158,12 +158,6 @@ typedef struct {
     Text *game_text;
     Text *prompt_text;
 
-    // Background panels (Text objects with viewport_color for BG)
-    Text *bg_top;
-    Text *bg_panel;
-    Text *bg_side;
-    Text *bg_bottom;
-
     // 3D rendering
     HSD_Archive *gui_archive;
     StockIcon p1_icon;
@@ -220,21 +214,6 @@ static int fetch_opponent_selection(u8 *char_id, u8 *color_id)
         *color_id = resp.char_color_selection;
     }
     return resp.is_found;
-}
-
-// ---------------------------------------------------------------------------
-// UI helpers: create a Text object used as a background panel
-// ---------------------------------------------------------------------------
-static Text *create_bg_panel(int canvas_id, float x, float y,
-                              float w, float h, GXColor *color)
-{
-    Text *t = Text_CreateText2(0, canvas_id, x, y, 0.0, w, h);
-    Text_AddSubtext(t, 0.0, 0.0, " ");
-    t->viewport_color = *color;
-    t->use_aspect = 1;
-    GXColor clear = {0, 0, 0, 0};
-    Text_SetColor(t, 0, &clear);
-    return t;
 }
 
 // ---------------------------------------------------------------------------
@@ -318,30 +297,9 @@ void minor_load(SharedMinorData *data)
     GXColor red     = {0xDB, 0x28, 0x28, 0xFF};
     GXColor cyan    = {0x00, 0xCC, 0xCC, 0xFF};
 
-    // Panel background colors (semi-transparent)
-    GXColor bg_dark   = {0x10, 0x10, 0x18, 0xD0};
-    GXColor bg_panel  = {0x18, 0x18, 0x28, 0xC0};
-    GXColor bg_side   = {0x14, 0x14, 0x22, 0xC0};
-    GXColor bg_bottom = {0x10, 0x10, 0x18, 0xA0};
-
     // --- Create canvas ---
+    // Background is black via CObj_SetEraseColor in CObjThink
     ui->canvas_id = Text_CreateCanvas(0, 0, 0, 13, 80, 8, 0, 0);
-
-    // --- Background panels ---
-    ui->bg_top = create_bg_panel(ui->canvas_id,
-        0.0, 0.0, 30.0, 2.2, &bg_dark);
-
-    ui->bg_panel = create_bg_panel(ui->canvas_id,
-        PANEL_LEFT - 0.5, PANEL_TOP - 0.5, PANEL_WIDTH + 1.0, 7.5, &bg_panel);
-
-    if (ui->wait_count > 0) {
-        float side_h = 2.5 + ui->wait_count * SIDE_LINE_H;
-        ui->bg_side = create_bg_panel(ui->canvas_id,
-            SIDE_LEFT - 0.5, SIDE_TOP - 0.5, SIDE_WIDTH + 1.0, side_h, &bg_side);
-    }
-
-    ui->bg_bottom = create_bg_panel(ui->canvas_id,
-        0.0, BOT_Y - 0.5, 30.0, 2.5, &bg_bottom);
 
     // =====================================================================
     // TOP BAR: Lobby name | Timer | Player count
@@ -715,12 +673,6 @@ void minor_exit(SharedMinorData *data)
     if (ui->side_header_text)  Text_Destroy(ui->side_header_text);
     if (ui->prompt_text)       Text_Destroy(ui->prompt_text);
     if (ui->game_text)         Text_Destroy(ui->game_text);
-
-    // Background panels
-    if (ui->bg_top)    Text_Destroy(ui->bg_top);
-    if (ui->bg_panel)  Text_Destroy(ui->bg_panel);
-    if (ui->bg_side)   Text_Destroy(ui->bg_side);
-    if (ui->bg_bottom) Text_Destroy(ui->bg_bottom);
 
     for (int i = 0; i < ROT_MAX_WAITING; i++)
     {
