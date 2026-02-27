@@ -28,24 +28,16 @@ static void load_msrb(u8 *buf)
 }
 
 // ---------------------------------------------------------------------------
-// ScenePrep — called before the minor scene's .dat is loaded
-// Override the MinorSceneDesc filename so m-ex loads our mnFunction from
-// the same RotationLobby.dat file.
+// ScenePrep — minor_prep callback for the lobby minor scene.
+// The .dat filename override is handled by ASM (RotationLobbyScenePrep in
+// main.asm) before this .dat even loads. This callback just invalidates
+// the character preload cache to prevent crashes on char change.
 // ---------------------------------------------------------------------------
 void ScenePrep(MinorScene *minor)
 {
     // Invalidate character preload cache (same as GamePrep)
-    // This prevents crashes when characters change between games
     void (*invalidate_preload_cache)(void) = (void (*)(void))0x800174bc;
     invalidate_preload_cache();
-
-    // Find the MinorSceneDesc for our minor_kind (CommonMinorID 0x20)
-    // and override its filename pointer to "RotationLobby.dat".
-    // The m-ex loader at 0x801a40c8 reads filename from MinorSceneDesc+0x10.
-    MinorSceneDesc *desc = Scene_GetMinorSceneDesc();
-    if (desc) {
-        desc->file_name = "RotationLobby.dat";
-    }
 }
 
 // ---------------------------------------------------------------------------
