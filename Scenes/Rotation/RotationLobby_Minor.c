@@ -247,7 +247,7 @@ void minor_load(SharedMinorData *data)
 
     // Lights
     GOBJ *light_gobj = GObj_Create(3, 4, 128);
-    LOBJ *lobj = LObj_CreateAll(gui->lights);
+    LOBJ *lobj = LObj_LoadAll(gui->lights);
     GObj_AddObject(light_gobj, 2, lobj);
     GObj_AddGXLink(light_gobj, GXLink_LObj, 0, 128);
 

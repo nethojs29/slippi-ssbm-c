@@ -30,7 +30,7 @@ $COMPILER_PATH -ff \
 
 # Compile minor scene (mnFunction) into same .dat
 $COMPILER_PATH -ff \
-  -i "RotationLobby_Minor.c" "../../Components/StockIcon.c" "../../Game/Characters.c" \
+  -i "RotationLobby_Minor.c" \
   -s mnFunction \
   -t "$TK_PATH/mnFunction.txt" \
   -l "$LINK_PATH" \
